@@ -1,0 +1,26 @@
+# Исполняемые файлы
+*.exe
+*.out
+*.o
+*.obj
+
+# Логи и временные файлы
+*.log
+*.tmp
+
+# IDE / редакторы
+.vscode/
+*.code-workspace
+*.sln
+*.vcxproj*
+*.user
+
+# MSYS2 / MinGW временные файлы
+/mingw64/lib/
+/mingw64/include/
+
+# Сборка через Makefile
+build/
+
+grid_cells_backup.py
+grids_backup.py

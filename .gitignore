@@ -24,3 +24,5 @@ build/
 
 grid_cells_backup.py
 grids_backup.py
+
+/__pycache__/

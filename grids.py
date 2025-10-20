@@ -41,6 +41,61 @@ class BaseGridWidget(QWidget):
         """Реализуется в дочерних классах"""
         raise NotImplementedError
 
+    def take_step(self):
+        """Вызывает step у всех клеток, затем у всех ребер."""
+        # шаг для клеток
+        for cell in self.cells:
+            if hasattr(cell, "step"):
+                cell.step()
+
+        # собираем все уникальные ребра
+        edges_set = set()
+        for cell in self.cells:
+            for edge in cell.edges.values():
+                if edge is not None:
+                    edges_set.add(edge)
+
+        # шаг для ребер
+        for edge in edges_set:
+            if hasattr(edge, "step"):
+                edge.step()
+
+        self.update()
+
+    def reset(self):
+
+        """Вызывает reset у всех клеток и всех ребер."""
+        # клетки
+        for cell in self.cells:
+            if hasattr(cell, "reset"):
+                cell.reset()
+
+        # ребра
+        edges_set = set()
+        for cell in self.cells:
+            for edge in cell.edges.values():
+                if edge is not None:
+                    edges_set.add(edge)
+
+        for edge in edges_set:
+            if hasattr(edge, "reset"):
+                edge.reset()
+
+        self.update()
+
+    def clear(self):
+        """Удаляет все клетки и все ребра."""
+        # обнуляем связи ребер
+        for cell in self.cells:
+            for side, edge in cell.edges.items():
+                if edge is not None:
+                    if edge.cell_a is cell:
+                        edge.cell_a = None
+                    if edge.cell_b is cell:
+                        edge.cell_b = None
+
+        self.cells.clear()
+        self.update()
     # ---------------- mouse ----------------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

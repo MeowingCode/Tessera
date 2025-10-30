@@ -154,8 +154,8 @@ class SettingsPanel(QFrame):
         # Выбор типа сетки
         layout.addWidget(QLabel("Тип сетки:"))
         self.combo = QComboBox()
-        self.combo.addItems(["square", "triangle", "hexagon"])
-        layout.addWidget(self.combo)
+        # self.combo.addItems(["square", "triangle", "hexagon"])
+        # layout.addWidget(self.combo)
 
 
         # Кнопка сворачивания
@@ -181,7 +181,7 @@ class SettingsPanel(QFrame):
         self.interval_spin = QDoubleSpinBox()
         self.interval_spin.setRange(0.0, 1.0)
         self.interval_spin.setSingleStep(0.05)
-        self.interval_spin.setValue(0.5)
+        self.interval_spin.setValue(0.3)
         layout.addWidget(self.interval_spin)
         layout.addStretch()
 
@@ -255,7 +255,7 @@ class MainWindow(QWidget):
         self.header.clear_button.clicked.connect(self.current_grid.clear)
 
         # ---------- Настройки окна ----------
-        self.setWindowTitle("Tessera")
+        self.setWindowTitle("DURDOM")
         self.resize(1200, 800)
 
     # ---------- Методы ----------

@@ -20,6 +20,8 @@ class BaseGridWidget(QWidget):
         self.min_grid_size = 12
         self.max_grid_size = 400
         self.setMouseTracking(True)
+        self.total_cells = 0  
+
 
     # ---------------- paint ----------------
     def paintEvent(self, event):
@@ -35,7 +37,7 @@ class BaseGridWidget(QWidget):
 
         # рисуем клетки
         for cell in self.cells:
-            cell.draw(painter, self.offset, self.grid_size)
+            cell.draw(painter, self.offset, self.grid_size, self.total_cells)
 
     def paint_grid(self, painter):
         """Реализуется в дочерних классах"""
@@ -157,6 +159,7 @@ class BaseGridWidget(QWidget):
             return
         row, col = coords
         existing = self.find_cell(row, col)
+        
         if mode == "draw":
             if existing is None:
                 cell = self.create_cell_with_edges(row, col)
@@ -170,6 +173,7 @@ class BaseGridWidget(QWidget):
             else:
                 cell = self.create_cell_with_edges(row, col)
                 self.cells.append(cell)
+        self.total_cells = len(self.cells)
         self.update()
 
     def remove_cell(self, cell):
@@ -258,8 +262,6 @@ class SquareGridWidget(BaseGridWidget):
         return row, col
 
 
-# ---------------- Triangle Grid ----------------
-# ---------------- TriangleGridWidget ----------------
 # ---------------- TriangleGridWidget ----------------
 class TriangleGridWidget(BaseGridWidget):
     def paint_grid(self, painter):

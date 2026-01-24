@@ -2,8 +2,10 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtGui import QPainter, QColor, QPen, QLinearGradient, QPolygon
 from PyQt5.QtCore import Qt, QPointF, QPoint
 import math
-from grid_cells import SquareCell, TriangleCell, HexagonCell, Edge
-
+from grid_cells import SquareCell, Edge
+from others_grid_cells import TriangleCell, HexagonCell
+import pyqtgraph as pg
+import random
 
 # ---------------- Base Grid Widget ----------------
 class BaseGridWidget(QWidget):
@@ -11,7 +13,10 @@ class BaseGridWidget(QWidget):
         super().__init__()
         self.grid_size = 80.0
         self.offset = QPointF(0.0, 0.0)
-        self.cells = []
+
+        # клетки хранятся как словарь {id: cell}
+        self.cells = {}
+        self.edges = []
         self.drawing = False
         self.mode = None
         self.last_pos = QPointF()
@@ -20,9 +25,14 @@ class BaseGridWidget(QWidget):
         self.min_grid_size = 12
         self.max_grid_size = 400
         self.setMouseTracking(True)
-        self.total_cells = 0  
+        self.num_draw_mode = "auto"
+        self.edge_draw_mode = 'auto'
+        # счётчик для уникальных id
+        self.next_id = 1
+        self.propagation = False
 
-
+    def get_cells_num(self): 
+        return len(self.cells)
     # ---------------- paint ----------------
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -32,72 +42,87 @@ class BaseGridWidget(QWidget):
         painter.fillRect(self.rect(), grad)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # рисуем сетку
+        # сетка
         self.paint_grid(painter)
 
-        # рисуем клетки
-        for cell in self.cells:
-            cell.draw(painter, self.offset, self.grid_size, self.total_cells)
+        # клетки
+        for cell in self.cells.values():
+            cell.draw(painter, self.offset, self.grid_size, len(self.cells))
 
-    def paint_grid(self, painter):
-        """Реализуется в дочерних классах"""
-        raise NotImplementedError
+    # ---------------- step / reset / clear ----------------
+    
+
+
 
     def take_step(self):
-        """Вызывает step у всех клеток, затем у всех ребер."""
-        # шаг для клеток
-        for cell in self.cells:
+        # 🔹 обновляем клетки в случайном порядке
+        cells_list = list(self.cells.values())
+        random.shuffle(cells_list)
+        for cell in cells_list:
             if hasattr(cell, "step"):
                 cell.step()
 
-        # собираем все уникальные ребра
-        edges_set = set()
-        for cell in self.cells:
-            for edge in cell.edges.values():
-                if edge is not None:
-                    edges_set.add(edge)
-
-        # шаг для ребер
-        for edge in edges_set:
+        # 🔹 обновляем рёбра в случайном порядке
+        edges_list = list(self.edges)
+        random.shuffle(edges_list)
+        for edge in edges_list:
+            if edge is None:
+                continue
+            if not getattr(edge, "alive", True):
+                continue
             if hasattr(edge, "step"):
                 edge.step()
 
+        # 🔹 обновляем виджет
         self.update()
 
-    def reset(self):
+        stop = True
+        for cell in self.cells.values():
+            if not cell.is_ready():
+                stop = False
+                break
+        return stop
 
-        """Вызывает reset у всех клеток и всех ребер."""
-        # клетки
-        for cell in self.cells:
+
+    
+
+
+    def get_graph(self):
+        pass
+
+    def start_propagation(self): 
+        self.propagation = True
+        for cell in self.cells.values(): 
+            cell.start_propagation()                   
+
+ 
+    def end_propagation(self):
+        self.propagation = False 
+        for cell in self.cells.values(): 
+            cell.end_propagation()   
+
+    
+    def reset(self):
+        self.propagation = False 
+        for cell in self.cells.values():
             if hasattr(cell, "reset"):
                 cell.reset()
-
-        # ребра
-        edges_set = set()
-        for cell in self.cells:
-            for edge in cell.edges.values():
-                if edge is not None:
-                    edges_set.add(edge)
-
-        for edge in edges_set:
-            if hasattr(edge, "reset"):
+        for edge in self.edges:
+            if edge and getattr(edge, "alive", True) and hasattr(edge, "reset"):
                 edge.reset()
-
         self.update()
 
     def clear(self):
-        """Удаляет все клетки и все ребра."""
-        # обнуляем связи ребер
-        for cell in self.cells:
-            for side, edge in cell.edges.items():
-                if edge is not None:
-                    if edge.cell_a is cell:
-                        edge.cell_a = None
-                    if edge.cell_b is cell:
-                        edge.cell_b = None
-
+        for e in self.edges:
+            if e:
+                e.alive = False
+                e.cell_a = None
+                e.cell_b = None
+        self.edges.clear()
         self.cells.clear()
+        self.next_id = 1
         self.update()
+
     # ---------------- mouse ----------------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -107,9 +132,10 @@ class BaseGridWidget(QWidget):
             if coords is None:
                 return
             row, col = coords
-            existing = any(c.row == row and c.col == col for c in self.cells)
+            existing = self.find_cell(row, col)
             self.mode = "erase" if existing else "draw"
             self.toggle_cell_at(event.pos(), self.mode)
+
         elif event.button() == Qt.MiddleButton:
             self.panning = True
             self.last_pan_pos = event.pos()
@@ -126,6 +152,7 @@ class BaseGridWidget(QWidget):
                 interp_y = self.last_pos.y() + (current_pos.y() - self.last_pos.y()) * t
                 self.toggle_cell_at(QPointF(interp_x, interp_y), self.mode)
             self.last_pos = current_pos
+
         elif self.panning:
             delta = event.pos() - self.last_pan_pos
             self.offset += delta
@@ -142,10 +169,10 @@ class BaseGridWidget(QWidget):
 
     def wheelEvent(self, event):
         step = event.angleDelta().y() / 120.0
-        if step == 0: return
+        if step == 0:
+            return
         old_size = self.grid_size
-        new_size = old_size * (1.1 ** step)
-        new_size = max(self.min_grid_size, min(self.max_grid_size, new_size))
+        new_size = max(self.min_grid_size, min(self.max_grid_size, old_size * (1.1 ** step)))
         cursor = QPointF(event.pos())
         scale_factor = new_size / old_size
         self.offset = cursor - (cursor - self.offset) * scale_factor
@@ -159,61 +186,89 @@ class BaseGridWidget(QWidget):
             return
         row, col = coords
         existing = self.find_cell(row, col)
-        
+
         if mode == "draw":
             if existing is None:
                 cell = self.create_cell_with_edges(row, col)
-                self.cells.append(cell)
+                self.cells[cell.id] = cell
+
         elif mode == "erase":
             if existing:
                 self.remove_cell(existing)
+
         elif mode is None:
             if existing:
                 self.remove_cell(existing)
             else:
                 cell = self.create_cell_with_edges(row, col)
-                self.cells.append(cell)
-        self.total_cells = len(self.cells)
+                self.cells[cell.id] = cell
+
         self.update()
 
     def remove_cell(self, cell):
-        # удаляем связи с ребрами
-        for side, e in cell.edges.items():
-            if e is None: 
-                continue
-            if e.cell_a is cell: e.cell_a = None
-            if e.cell_b is cell: e.cell_b = None
-        self.cells.remove(cell)
+        if cell.id not in self.cells:
+            return
 
+        # удалить рёбра
+        for edge in cell.edges.values():
+            if edge is None:
+                continue
+            if edge.cell_a is cell:
+                edge.cell_a = None
+            elif edge.cell_b is cell:
+                edge.cell_b = None
+            if edge.cell_a is None or edge.cell_b is None:
+                edge.alive = False
+
+        # почистить соседей
+        for c in self.cells.values():
+            for side, edge in list(c.edges.items()):
+                if edge and not getattr(edge, "alive", True):
+                    c.edges[side] = None
+
+        # чистим общий список рёбер
+        self.edges = [e for e in self.edges if getattr(e, "alive", True)]
+
+        # удалить саму клетку
+        del self.cells[cell.id]
+        self.update()
+
+    # ---------------- утилиты ----------------
     def find_cell(self, row, col):
-        for c in self.cells:
+        for c in self.cells.values():
             if c.row == row and c.col == col:
                 return c
         return None
 
     def create_cell_with_edges(self, row, col):
-        """Реализуется в дочерних классах"""
         raise NotImplementedError
 
     def get_cell_coords(self, pos):
-        """Реализуется в дочерних классах"""
         raise NotImplementedError
 
-    def point_in_polygon(self, x, y, points):
-        num = len(points)
-        j = num - 1
-        inside = False
-        for i in range(num):
-            xi, yi = points[i]
-            xj, yj = points[j]
-            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi):
-                inside = not inside
-            j = i
-        return inside
+    def print_stats(self):
+        print(f"Cells: {len(self.cells)}, Edges: {len(self.edges)}")
+
+
+    def change_num_draw_mode(self, mode): 
+        self.num_draw_mode = mode
+        for cell in self.cells.values():
+            cell.change_num_draw_mode(mode)
+        self.update()
+
+    def change_edge_draw_mode(self, mode): 
+        self.edge_draw_mode = mode
+        for cell in self.cells.values(): 
+            cell.change_edge_draw_mode(mode)
+        self.update()
+
 
 
 # ---------------- Square Grid ----------------
 class SquareGridWidget(BaseGridWidget):
+    def __init__(self):
+        super().__init__()
+
     def paint_grid(self, painter):
         w, h, s = self.width(), self.height(), self.grid_size
         col_min = math.floor(-self.offset.x() / s)
@@ -221,38 +276,49 @@ class SquareGridWidget(BaseGridWidget):
         row_min = math.floor(-self.offset.y() / s)
         row_max = math.ceil((h - self.offset.y()) / s)
         painter.setPen(QPen(QColor(0, 0, 0)))
+
         for row in range(row_min, row_max + 1):
             y = row * s + self.offset.y()
             painter.drawLine(0, int(y), w, int(y))
+
         for col in range(col_min, col_max + 1):
             x = col * s + self.offset.x()
             painter.drawLine(int(x), 0, int(x), h)
 
     def create_cell_with_edges(self, row, col):
-        cell = SquareCell(row, col)
-        # создаём соседние ребра
+        # 🔹 создаём клетку с уникальным ID
+        cell = SquareCell(self.next_id, row, col, self.num_draw_mode, self.edge_draw_mode)
+        self.next_id += 1
+
+        # инициализируем словарь рёбер
+        cell.edges = {"top": None, "right": None, "bottom": None, "left": None}
+
+        # соседние клетки и противоположные стороны
         neighbors = {
             "top": (row - 1, col, "bottom"),
             "right": (row, col + 1, "left"),
             "bottom": (row + 1, col, "top"),
             "left": (row, col - 1, "right")
         }
+
         for side, (nr, nc, opp) in neighbors.items():
             neighbor = self.find_cell(nr, nc)
             if neighbor:
                 shared_edge = neighbor.edges.get(opp)
-                if shared_edge is None:
-                    shared_edge = Edge(neighbor, cell)
+                if shared_edge and getattr(shared_edge, "alive", True):
+                    # используем уже существующее ребро
+                    cell.edges[side] = shared_edge
                     neighbor.edges[opp] = shared_edge
-                    cell.edges[side] = shared_edge
                 else:
-                    if shared_edge.cell_a is None and shared_edge.cell_b is not None:
-                        shared_edge.cell_a = cell
-                    elif shared_edge.cell_b is None and shared_edge.cell_a is not None:
-                        shared_edge.cell_b = cell
-                    cell.edges[side] = shared_edge
+                    # создаём новое ребро между cell и neighbor
+                    new_edge = Edge(cell, neighbor)
+                    cell.edges[side] = new_edge
+                    neighbor.edges[opp] = new_edge
+                    self.edges.append(new_edge)
             else:
-                cell.edges[side] = Edge(cell, None)
+                # соседа нет — ребро не создаём
+                cell.edges[side] = None
+
         return cell
 
     def get_cell_coords(self, pos):
@@ -262,158 +328,5 @@ class SquareGridWidget(BaseGridWidget):
         return row, col
 
 
-# ---------------- TriangleGridWidget ----------------
-class TriangleGridWidget(BaseGridWidget):
-    def paint_grid(self, painter):
-        H = self.grid_size
-        s = 2.0 * H / math.sqrt(3)
-        w, h = self.width(), self.height()
-        col_min = math.floor(-self.offset.x() / (s / 2.0))
-        col_max = math.ceil((w - self.offset.x()) / (s / 2.0))
-        row_min = math.floor(-self.offset.y() / H)
-        row_max = math.ceil((h - self.offset.y()) / H)
-        painter.setPen(QPen(QColor(0, 0, 0)))
-        for row in range(row_min, row_max + 1):
-            for col in range(col_min, col_max + 1):
-                x0 = col * (s / 2.0) + self.offset.x()
-                y0 = row * H + self.offset.y()
-                up = (row + col) % 2 == 0
-                if up:
-                    pts = [(x0, y0 + H), (x0 + s / 2.0, y0), (x0 + s, y0 + H)]
-                else:
-                    pts = [(x0, y0), (x0 + s / 2.0, y0 + H), (x0 + s, y0)]
-                qpts = [QPoint(int(round(px)), int(round(py))) for px, py in pts]
-                painter.drawPolygon(QPolygon(qpts))
-
-    def create_cell_with_edges(self, row, col):
-        cell = TriangleCell(row, col)
-        up = (row + col) % 2 == 0
-
-        if up:
-            neighbors = [
-                (row, col-1, "a", "c"),  # левый
-                (row, col+1, "c", "a"),  # правый
-                (row+1, col, "b", "b"),  # нижний через ребро
-            ]
-        else:
-            neighbors = [
-                (row, col-1, "a", "c"),  # левый
-                (row, col+1, "c", "a"),  # правый
-                (row-1, col, "b", "b"),  # верхний через ребро
-            ]
-
-        for nr, nc, side, opp in neighbors:
-            neighbor = self.find_cell(nr, nc)
-            if neighbor:
-                shared_edge = neighbor.edges.get(opp)
-                if shared_edge is None:
-                    shared_edge = Edge(neighbor, cell)
-                    neighbor.edges[opp] = shared_edge
-                    cell.edges[side] = shared_edge
-                else:
-                    if shared_edge.cell_a is None:
-                        shared_edge.cell_a = cell
-                    elif shared_edge.cell_b is None:
-                        shared_edge.cell_b = cell
-                    cell.edges[side] = shared_edge
-            else:
-                if cell.edges[side] is None:
-                    cell.edges[side] = Edge(cell, None)
-
-        return cell
 
 
-
-
-
-    def get_cell_coords(self, pos):
-        H = self.grid_size
-        s = 2.0 * H / math.sqrt(3)
-        col = math.floor((pos.x() - self.offset.x()) / (s / 2.0))
-        row = math.floor((pos.y() - self.offset.y()) / H)
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                r, c = row + dr, col + dc
-                x0 = c * (s / 2.0) + self.offset.x()
-                y0 = r * H + self.offset.y()
-                up = (r + c) % 2 == 0
-                poly = [(x0, y0 + H), (x0 + s / 2.0, y0), (x0 + s, y0 + H)] if up else [(x0, y0), (x0 + s / 2.0, y0 + H), (x0 + s, y0)]
-                if self.point_in_polygon(pos.x(), pos.y(), poly):
-                    return r, c
-        return None
-
-
-
-
-# ---------------- Hexagon Grid ----------------
-class HexagonGridWidget(BaseGridWidget):
-    def paint_grid(self, painter):
-        Hh = self.grid_size
-        hex_s = Hh / math.sqrt(3)
-        half_h = Hh / 2.0
-        w, h = self.width(), self.height()
-        col_min = math.floor(-self.offset.x() / (1.5 * hex_s))
-        col_max = math.ceil((w - self.offset.x()) / (1.5 * hex_s))
-        row_min = math.floor(-self.offset.y() / (2 * half_h))
-        row_max = math.ceil((h - self.offset.y()) / (2 * half_h))
-        painter.setPen(QPen(QColor(0, 0, 0)))
-        for col in range(col_min, col_max + 1):
-            for row in range(row_min, row_max + 1):
-                cx = col * 1.5 * hex_s + self.offset.x()
-                cy = row * 2 * half_h + (col % 2) * half_h + self.offset.y()
-                pts = [(cx + hex_s * math.cos(math.radians(a)), cy + hex_s * math.sin(math.radians(a)))
-                       for a in range(0, 360, 60)]
-                qpts = [QPoint(int(round(px)), int(round(py))) for px, py in pts]
-                painter.drawPolygon(QPolygon(qpts))
-
-    def create_cell_with_edges(self, row, col):
-        cell = HexagonCell(row, col)
-        # направления соседей: (even_col_dr, even_col_dc, odd_col_dr, odd_col_dc, opposite_side)
-        directions = [
-            ("0",  -1, 0,  -1, 0, "180"),      # верх
-            ("60", -1, 1,   0, 1, "240"),      # верх-право
-            ("120", 0, 1,   1, 1, "300"),      # низ-право
-            ("180", 1, 0,   1, 0, "0"),        # низ
-            ("240", 0, -1,  1, -1, "60"),      # низ-лево
-            ("300", -1, -1, 0, -1, "120")      # верх-лево
-        ]
-
-        for side, dr_even, dc_even, dr_odd, dc_odd, opp in directions:
-            if col % 2 == 0:
-                nr, nc = row + dr_even, col + dc_even
-            else:
-                nr, nc = row + dr_odd, col + dc_odd
-
-            neighbor = self.find_cell(nr, nc)
-            if neighbor:
-                shared_edge = neighbor.edges.get(opp)
-                if shared_edge is None:
-                    shared_edge = Edge(neighbor, cell)
-                    neighbor.edges[opp] = shared_edge
-                    cell.edges[side] = shared_edge
-                else:
-                    if shared_edge.cell_a is None:
-                        shared_edge.cell_a = cell
-                    elif shared_edge.cell_b is None:
-                        shared_edge.cell_b = cell
-                    cell.edges[side] = shared_edge
-            else:
-                if cell.edges[side] is None:
-                    cell.edges[side] = Edge(cell, None)
-        return cell
-
-    def get_cell_coords(self, pos):
-        Hh = self.grid_size
-        s = Hh / math.sqrt(3)
-        half_h = Hh / 2.0
-        col = math.floor((pos.x() - self.offset.x()) / (1.5 * s))
-        row = math.floor((pos.y() - self.offset.y() - (col % 2) * half_h) / (2 * half_h))
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                c, r = col + dc, row + dr
-                cx = c * 1.5 * s + self.offset.x()
-                cy = r * 2 * half_h + (c % 2) * half_h + self.offset.y()
-                poly = [(cx + s * math.cos(math.radians(a)), cy + s * math.sin(math.radians(a))) for a in range(0, 360, 60)]
-                if self.point_in_polygon(pos.x(), pos.y(), poly):
-                    return r, c
-        return None

@@ -22,8 +22,7 @@
 # Сборка через Makefile
 build/
 
-grid_cells_backup.py
-grids_backup.py
-main_backup.py
+*_backup.py
+*copy.py
 
 /__pycache__/

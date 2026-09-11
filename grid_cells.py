@@ -143,13 +143,15 @@ class SquareCell(GridCell):
         self.root_id = 0 
         self.hops_to_root = 0 
         self.parent = None 
+        self.reset_root = 0
+        self.weight_state_counter = 0 
 
-        self.neigh_nums = {"top": None, "right": None, "bottom": None, "left": None}
-        self.neigh_weight = {"top": None, "right": None, "bottom": None, "left": None}
+        self.neigh_nums = {"top": 0, "right": 0, "bottom": 0, "left": 0}
+        self.neigh_weight = {"top": 0, "right": 0, "bottom": 0, "left": 0}
         
-        self.neigh_root_rating = {"top": 0, "right": 0, "bottom": 0, "left": 0}
-
+        self.accepted = {"top": False, "right": False, "bottom": False, "left": False}
         self.transferred = {"top": False, "right": False, "bottom": False, "left": False}
+        
         self.commands = {"top": None, "right": None, "bottom": None, "left": None}
         self.data = {"top": None, "right": None, "bottom": None, "left": None}
 
@@ -160,6 +162,7 @@ class SquareCell(GridCell):
 
         self.has_propagation = False 
         self.wait_propagation = False 
+    
     def get_id(self): 
         return self.id
 
@@ -170,81 +173,93 @@ class SquareCell(GridCell):
     def listening_neighbours(self):
         num_state = False 
         weight_state = False 
-        election_state = False 
-        node_state = False 
+        forward_state = False
+        backward_state = False 
+        repeat_weight = False 
+
         for direct, edge in self.edges.items():
             if edge is None:
-                self.transferred[direct] = True
-                
-                # если соседа нет, а указан, значит соседа убрали
-                if self.neigh_nums[direct] is not None and self.neigh_nums[direct] > 0:
+                # убрали
+                if self.neigh_nums[direct] > 0:
                     num_state = True 
                 continue
-            # сосед есть, а указано 0, значит кто-то новый, спросить его 
-            if self.neigh_nums[direct] == 0: 
-                num_state = True 
-            
+            # добавили
+            if self.accepted[direct] and self.neigh_nums[direct] == 0:
+                num_state = True
+
             # стандартный listining соседей 
             command, data = edge.read_data(self)
             if command is not None:
                 self.commands[direct] = command
                 self.data[direct] = data
                 if command == "num": num_state = True
-                elif command == "weight": weight_state = True   
-                elif command == "root_rating": election_state = True 
-                elif command[:6] == "rootID": node_state = True
+                elif command == "weight": weight_state = True
+                elif command == "rootID": forward_state = True 
+                elif command == "connect": backward_state = True 
+                elif command == "weight?": repeat_weight = True 
 
         if num_state: 
             self.set_num_state()
-        elif weight_state and self.state != "weight" and self.state != "num": 
+        elif weight_state and self.state not in ("num", "weight"): 
             self.set_weight_state() 
-        elif election_state and self.state != "election" and self.state != "weight" and self.state != "num":
-            self.determine_node_role()
-        elif node_state:
-            if self.state == "connect": self.set_leaf_state()
-            elif self.state == "Root": self.root() 
+        elif repeat_weight and self.state != "num": 
+            self.answer_weight()
+        elif forward_state and self.state not in ("num", "weight"): 
+            self.state = "forward"
+        elif backward_state and self.state not in ("num", "weight", "forward"): 
+            self.state = "backward"
 
 
 # --------------- num state ----------------------------------------------------------
     def set_num_state(self): 
-        # если ячейка не в состоянии num, значит опрос уже был
-        # надо учесть только изменения
-        if self.state != "num":
-            self.transferred = {"top": True, "right": True, "bottom": True, "left": True}
-        self.state = "num"
-        
+        if self.state != "num": 
+            self.accepted = {d: True for d in self.transferred.keys()}
+            self.transferred = {d: True for d in self.transferred.keys()}
+                
         for direct, edge in self.edges.items():
             opp_direct = self.opposite_direct(direct)
-            
-            # сосед исчез
-            if edge is None:
-                if self.neigh_nums[direct] is not None and self.neigh_nums[direct] > 0: 
-                    self.transferred[opp_direct] = False
-                    self.neigh_nums[direct] = 0 
-                    
-                continue
+            # убрали
+            if edge is None and self.neigh_nums[direct] > 0:
+                self.neigh_nums[direct] = 0 
+                self.neigh_weight[direct] = 0
+                self.neigh_weight[opp_direct] = 0
+                
+                self.accepted[direct] = True 
+                self.transferred[direct] = True 
+                self.transferred[opp_direct] = False 
+            # добавили
+            if edge is not None and self.accepted[direct] and self.neigh_nums[direct] == 0: 
+                self.neigh_weight[direct] = 0
+                self.neigh_weight[opp_direct] = 0
 
-            # сосед появился 
-            if self.neigh_nums[direct] == 0: 
-                self.transferred[direct] = False
-                # self.transferred[opp_direct] = False
-                self.neigh_nums[direct] = None
-            
-            if self.commands[direct] == "num": 
+                self.accepted[direct] = False 
+                self.transferred[direct] = False 
                 self.transferred[opp_direct] = False
 
+            if self.commands[direct] == "num": 
+                self.transferred[opp_direct] = False  
+                self.neigh_weight[direct] = 0
+                self.neigh_weight[opp_direct] = 0
+
+        self.state = "num"
+
+
     def nums_exchange(self): 
-        for direct, edge in self.edges.items():
-            if edge is None: 
-                self.neigh_nums[direct] = 0
-                self.transferred[direct] = True
                 
         # опрос
         for direct, command in self.commands.items():  
+            if self.edges[direct] is None: 
+                self.accepted[direct] = True
+                self.transferred[direct] = True 
+                self.neigh_nums[direct] = 0 
+                
+                self.commands[direct] = None
+                self.data[direct] = None
+                continue
             if command != "num": 
                 continue
-            opp_direct = self.opposite_direct(direct)
             self.neigh_nums[direct] = self.data[direct]
+            self.accepted[direct] = True
 
             self.commands[direct] = None
             self.data[direct] = None
@@ -260,38 +275,31 @@ class SquareCell(GridCell):
             if self.edges[opp_direct] is None:
                 self.transferred[direct] = edge.transfer(self, "num", 1)
 
-            elif self.neigh_nums[opp_direct] is not None:
+            elif  self.neigh_nums[opp_direct] is not None and self.neigh_nums[opp_direct]>0:
                 self.transferred[direct] = edge.transfer(self, "num", self.neigh_nums[opp_direct] + 1)
         
-        accepted = all(n is not None for n in self.neigh_nums.values())
+        accepted = all(self.accepted.values())
         transferred =  all(self.transferred.values())
 
         if accepted and transferred:
-            self.state = "weight"
             self.set_weight_state()
-
 
 # --------------------- weight state -----------------------------------------------------
     def set_weight_state(self): 
-        self.calculate_weight()
         
-        if self.state == "weight": 
-            # стандартный переход в следующее состояние
-            self.state = "weight"
-            self.calculate_weight()
-            self.transferred = {k: False for k in self.transferred}
-            self.neigh_weight = {k: None for k in self.neigh_weight}
-            return 
-    
+        self.calculate_weight()
+        if self.state == "num":
+            self.transferred = {d: False for d in self.transferred.keys()}
         else: 
-            # изменение в топологии 
-            self.state = "weight"
-            self.transferred = {k: True for k in self.transferred}
+            self.transferred = {d: True for d in self.transferred.keys()}
+        
+        # self.accepted = {d: True for d in self.accepted.keys()}
+        # for direct, weight in self.neigh_weight.items(): 
+        #     if weight == 0 and self.edges[direct] is not None: 
+        #         self.accepted[direct] = False 
 
-            for direct, command in self.commands.items():  
-                if command != "weight": 
-                    continue
-                self.transferred[direct] = False    
+        self.state = "weight"
+
 
     # пересылка весов друг другу
     def weight_exchange(self):
@@ -301,6 +309,7 @@ class SquareCell(GridCell):
             if command != "weight": 
                 continue
             self.neigh_weight[direct] = self.data[direct]
+            # self.accepted[direct] = True 
             self.commands[direct] = None
             self.data[direct] = None
         
@@ -308,517 +317,248 @@ class SquareCell(GridCell):
         for direct, edge in self.edges.items():
             if edge is None: 
                 self.neigh_weight[direct] = 0
+                # self.accepted[direct] = True 
                 self.transferred[direct] = True 
                 continue
             if self.transferred[direct]: 
                 continue
 
             self.transferred[direct] = edge.transfer(self, "weight", self.weight)
-        
-        accepted = all(w is not None for w in self.neigh_weight.values())
+
+        accepted = all([w > 0 for d, w in self.neigh_weight.items() if self.edges[d] is not None])
         transferred =  all(self.transferred.values())
 
         if accepted and transferred:
-            self.determine_node_role()
+            self.reset_root = 0 
+            self.start_forward_path()
 
-# ------------------------- gradient map --------------------------------------------
-    def determine_node_role(self): 
-        self.calculate_weight() 
-        num_rivals = 0
-        max_w =  self.neigh_weight["top"]
-              
-        if self.state != "weight":     
-            
-            for direct, weight in self.neigh_weight.items():
-                if weight == self.weight: 
-                    self.connections[direct] = True 
-                    num_rivals += 1
-                if weight > max_w: max_w = weight 
-
-
-        else:
-            self.root_rating = 0
-            self.connections = {k: False for k in self.connections}
-            self.transferred = {k: True for k in self.transferred} 
-            self.neigh_root_rating = {k: 0 for k in self.neigh_root_rating} 
-            
-            for direct, weight in self.neigh_weight.items():
-                if weight == self.weight: 
-                    self.connections[direct] = True 
-                    self.transferred[direct] = False
-                    num_rivals += 1
-                if weight > max_w: max_w = weight 
-        
-        
-        # root
-        if max_w < self.weight:
-            self.set_root_state()
-            return
-        
-        # leaf 
-        if max_w > self.weight and num_rivals == 0:
-            self.set_leaf_state()
-            return 
-        
-        self.state = "election"        
-        if  max_w > self.weight:
-            self.root_rating = 6
-            return 
-        
-        if not self.root_rating == 6:
-            self.root_rating = self.get_root_rating(num_rivals)
-        
-
-    def get_root_rating(self, num_rivals): 
-        if num_rivals == 1: # один сосед такого же веса 
-            return 1
-        
-        if num_rivals == 2: 
-            if self.connections["top"]: return 2 # нижний угол 
-            elif self.connections["bottom"]: return 3 # верхний угол 
-            else: return 2 # линия 
-
-        if num_rivals == 3: 
-            return 4 
-        
-        if num_rivals == 4: 
-            return 5 
-
-# ------------------------- root election --------------------------------------------
-    # обмен рейтингов среди ячеек с одинаковым весом 
-    def root_rating_exchange(self):
-        # опрос
-        for direct, command in self.commands.items():
-
-            if not self.connections[direct]:
-                continue
-            if command != "root_rating": 
-                continue
-
-            self.neigh_root_rating[direct] = self.data[direct]
-            self.commands[direct] = None
-            self.data[direct] = None
-        
-        # передача
-        for direct, edge in self.edges.items():
-            if self.transferred[direct] or not self.connections[direct]:
-                continue
-
-            self.transferred[direct] = edge.transfer(self, "root_rating", self.root_rating)
-
-        # закончился ли обмен  
-        accepted = all(
-            rating != 0
-            for direct, rating in self.neigh_root_rating.items()
-            if self.connections[direct])
-        transferred = all(self.transferred.values())
-
-        if accepted and transferred:
-            pass
-            self.root_selection()
-            
-
-    def root_selection(self):
-        # рейтинги конкурентов
-        rivalvs = {
-            d: r for d, r in self.neigh_root_rating.items()
-            if self.connections[d]}
-        
-        neigh_rating = list(rivalvs.values())
-        max_rating = max(neigh_rating, default=float("-inf"))
-        
-        # ------------- root_rating = 6 ------------------
-        if self.root_rating == 6: 
-            self.set_leaf_state() 
-            return    
-        
+# ------------------------- forward path -----------------------------------------------------------
+    def root_points(self):
          
-        if max_rating == 6: 
-            # где-то есть вес побольше, передаем эту информацию дальше 
-            self.root_rating = 6 
-            self.transferred = {k: True for k in self.transferred}
-            for direct in rivalvs.keys():
-                if self.neigh_root_rating[direct] < 6:  
-                    self.transferred[direct] = False 
-            return  
-                
-        if self.root_rating in (2, 3):
-            if max_rating > 3:
-                self.set_leaf_state()
-                return
+        root_points = sum([edge is not None for edge in self.edges.values()])
 
-            if max_rating < 2:
-                self.set_root_state()
-                return
-            self.corner(rivalvs)
-            return 
+        if self.edges["top"] and self.edges["bottom"] or self.edges["left"] and self.edges["right"]: 
+            root_points -= 1
+        return root_points 
 
-        if max_rating > self.root_rating: 
-            self.set_leaf_state()
-            return  
-        
-        # ------------- root_rating = 1 ------------------
-        if self.root_rating == 1:
-            # приоритет: top → left → иначе root
-            if self.connections.get("top"):
-                self.neigh_weight["top"] += 1
-                self.set_leaf_state() 
-
-            elif self.connections.get("left"):
-                self.neigh_weight["left"] += 1
-                self.set_leaf_state() 
-            else:
-                self.weight += 1
-                self.set_root_state() 
-            return
-            
-        # ---------- root_rating == 4 или 5 ----------
-        if self.root_rating in (4, 5):
-            
-            for direct, rating in rivalvs.items():
-                if rating >= self.root_rating: 
-                    if direct == "top" or direct == "left": 
-                        self.set_leaf_state()
-                        return 
-                if rating < self.root_rating:
-                    self.weight += 1            
-            self.set_root_state() 
-            return
-
-    def corner(self, rivalvs): 
-        neigh_rating = list(rivalvs.values())
-
-        # --- формирование цепочки ---
-        downgraded = False
-        for d, r in rivalvs.items():
-            if r < 2:
-                self.connections[d] = False
-                self.root_rating = 1
-                downgraded = True
-
-        if downgraded:
-            # уведомляем соседей с большим рейтингом
-            for d, r in rivalvs.items():
-                if r >= 2:
-                    self.transferred[d] = False
-                    # self.neigh_root_rating[d] = 0
-            return
-
-        # --- случай квадратов ---
-        if len(neigh_rating) >= 2 and neigh_rating[0] != neigh_rating[1]:
-            if self.connections.get("bottom") and self.connections.get("right"):
-                self.connections["bottom"] = False
-                self.neigh_weight["bottom"] += 1
-
-                self.connections["right"] = False
-                self.neigh_weight["right"] += 1
-
-                self.weight += 2
-                self.set_root_state()
-                return
-
-            if self.connections.get("top") and self.connections.get("left"):
-                self.neigh_weight["top"] += 1
-                self.neigh_weight["left"] += 1
-                self.set_leaf_state()
-                return
-
-            if self.root_rating == 2:
-                self.connections["right"] = False
-                self.neigh_weight["top"] += 2
-                self.weight += 1
-                self.set_leaf_state()
-                return
-
-            if self.root_rating == 3:
-                self.connections["bottom"] = False
-                self.neigh_weight["left"] += 2
-                self.weight += 1
-                self.set_leaf_state()
-                return
-
-        # --- равные рейтинги → повторный опрос ---
-        if len(neigh_rating) >= 2 and neigh_rating[0] == neigh_rating[1]:
-            self.weight += 1
-            for d in rivalvs:
-                self.transferred[d] = False
-                self.neigh_root_rating[d] = 0
-            return
-
-
-# -------------- node state ---------------------------------------
-    def set_leaf_state(self):
-        if self.state != "root": self.connections = {k: False for k in self.connections}
-        self.state = "leaf"
-        self.root_rating = 6 
-        
-        
-# ----------------------------- root state -------------------------------------
-    def set_root_state(self):
-        self.state = "root"
-        self.parent = None 
-        self.root_rating = 7
-        self.hops_to_root = 0 
-        
-        # доп баллы 
-        penalty = False # штраф за отсутствие какого-нибудь измерения
-        # (только вертикальное или только горизонтальное)
-        for direct, edge in self.edges.items():
-            self.connections[direct] = False
-            if edge is None:
-                self.transferred[direct] = True 
-                opp_direct = self.opposite_direct(direct)
-                if self.edges[opp_direct] is None: 
-                    penalty = True 
-                continue 
-            self.transferred[direct] = False 
-            self.weight += 1 #бонус за root не на крае 
-        if penalty: self.weight -= 1   
-
-        self.root_id = self.id
-        self.root_weight = self.weight
-
-    def root(self): 
-        for direct, command in self.commands.items():
-            if command is None: 
-                continue 
-            elif command[:6] == "rootID":
-                root_id = int(command[6:])
-                root_weight, hops = self.data[direct]
-                self.choce_root_id(direct, root_id, root_weight, hops)
-                
-                self.commands[direct] = None 
-                self.data[direct] = None 
-        
-        for direct, hops in self.hops.items(): 
-            if hops == self.hops_to_root: 
-                self.connections[direct] = True 
-            else: self.connections[direct] = False
-        
-        if self.root_id != self.id: 
-            self.set_leaf_state()
-            return 
-                                 
-        if not all(self.transferred.values()) and self.root_id != 0: 
-            self.send_root_id()
-            return 
-        else: 
-            self.state = "Root" 
-            return 
     
-    def Root(self): 
-        for direct, command in self.commands.items(): 
-            if command is None: 
-                continue 
-            if command != "connect": 
+    def start_forward_path(self): 
+        
+        # если раньше были связи 
+        if any([c for c in self.connections.values()]) and self.root_id != 0:
+            for direct, edge in self.edges.items(): 
+                if not self.connections[direct]: 
+                    continue
+                # если связь пропала
+                if edge is None: 
+                    self.connections[direct] = False 
+            # вообще больше нет связей
+            if not any([c for c in self.connections.values()]) : 
+                    self.root_weight = 0 
+                    self.state = "update" 
+                    self.transferred = {d: False for d in self.transferred.keys()}
+                    return 
+                    
+        self.state = "forward"
+        
+        root_candidate = all([w <= self.weight for w in self.neigh_weight.values()])
+        current_root_weight = self.weight + self.root_points()
+
+        if self.root_id == self.id: 
+            self.change_root(self.id, current_root_weight, 0)
+            if not root_candidate: 
+                self.root_weight = 0 
+                self.state = "update"
+
+        if root_candidate and current_root_weight > self.root_weight: 
+            self.change_root(self.id, current_root_weight, 0)
+
+        self.accepted = {d: True for d in self.accepted.keys()}
+        self.transferred = {d: False for d in self.transferred.keys()}
+        
+
+    def update_root_info(self): 
+        for direct, edge in self.edges.items(): 
+            if edge is None: 
+                self.transferred[direct] = True 
                 continue
-            # присоединяются ли листья
-            self.leafs[direct] = self.data[direct]
-            self.connections[direct] = self.data[direct]
+            # if self.connections[direct]: 
+            #     self.transferred[direct] = True 
+            #     continue
+
+            self.transferred[direct] = edge.transfer(self, "rootID", (self.root_id, self.root_weight, self.hops_to_root + 1))
+
+        if all(self.transferred.values()):
+            if self.root_weight == 0: 
+                self.reset_root = self.root_id
+                self.root_id = 0
+                self.hops_to_root = 0
+                self.connections = {d: False for d in self.connections.keys()}
+            self.start_forward_path()      
+
+
+    def compare_roots(self, id, weight):
+        if weight == 0: 
+            return False 
+        elif self.root_weight < weight:
+            return True 
+        elif self.root_weight == weight: 
+            if id < self.root_id:
+                return True 
+        return False
+    
+    def change_root(self, id, weight, hops):
+        self.root_id = id 
+        self.root_weight = weight
+        self.hops_to_root = hops
+        self.connections  = {d: False for d in self.connections.keys()}
+        
+
+    def root_id_exchange(self):
+        for direct, command in self.commands.items(): 
+            if command != "rootID": 
+                continue
+            root_id, root_weight, hops_to_root = self.data[direct]
+            
+            if root_id == self.root_id: 
+                if root_weight != self.root_weight: 
+                    self.state = "update"
+                    self.root_weight = root_weight
+                    self.transferred = {d: False for d in self.transferred.keys()}
+                    self.update_root_info()
+                    return 
+                
+                if hops_to_root < self.hops_to_root: 
+                    self.hops_to_root = hops_to_root
+                    self.connections  = {d: False for d in self.connections.keys()}
+                    self.connections[direct] = True 
+                elif hops_to_root == self.hops_to_root:  
+                    self.connections[direct] = True 
+
+            elif self.compare_roots(root_id, root_weight) and root_id != self.reset_root: 
+                self.change_root(root_id, root_weight, hops_to_root)
+                self.connections[direct] = True
 
             self.commands[direct] = None 
             self.data[direct] = None 
-
-# --------------------------------------------------------------------------------------
-    def send_root_id(self): 
-        for direct, edge in self.edges.items():
-            if edge is None: 
-                self.transferred[direct] = True
-                continue
-            if self.transferred[direct] or self.connections[direct]: 
-                self.transferred[direct] = True 
-                continue
-            self.transferred[direct] = edge.transfer(self, "rootID" + str(self.root_id), (self.root_weight, self.hops_to_root + 1))        
-
-    def choce_root_id(self, direct, root_id, root_weight, hops):
         
         if self.root_id == 0: 
-            # первый встреченный root 
-            self.transferred = {"top": False, "right": False, "bottom": False, "left": False}
-            self.connections = {"top": False, "right": False, "bottom": False, "left": False}
-            self.connections[direct] = True 
-            self.transferred[direct] = True 
-            self.root_id = root_id 
-            self.root_weight = root_weight
-            self.hops_to_root = hops
-            self.hops[direct] = hops
-            return 
-        
-        if root_id == self.root_id: 
-            self.transferred[direct] = True 
-            if hops > self.hops_to_root:  
-                self.hops[direct] = hops
-                self.transferred[direct] = False 
-                return 
-            # получили тот же id с другой стороны 
-            if hops < self.hops_to_root: 
-                self.hops_to_root = hops
-                self.connections[direct] = {"top": False, "right": False, "bottom": False, "left": False}
-                
-            if hops <= self.hops_to_root:
-                self.connections[direct] = True 
-            self.hops[direct] = hops
-            return 
-        
-        #  конфликт root_id != self.root_id 
-        if root_weight > self.root_weight or (root_weight == self.root_weight and root_id < self.root_id):
-
-            # переобуваемся (выбираем рут с большим весом)
-            self.root_id = root_id 
-            self.root_weight = root_weight
-            self.hops_to_root = hops   
-            self.hops =  {"top": None, "right": None, "bottom": None, "left": None}   
-            self.hops[direct] = hops     
-            self.connections = {"top": False, "right": False, "bottom": False, "left": False}
-            self.transferred = {"top": False, "right": False, "bottom": False, "left": False}
-
-            self.connections[direct] = True 
-            self.transferred[direct] = True 
-
-# ----------------------------- leaf state -------------------------------------------------------
-    def leaf(self):
-
-
-        for direct, command in self.commands.items():
-            if command is None: 
-                continue 
-            elif command[:6] == "rootID":
-                root_id = int(command[6:])
-                root_weight, hops = self.data[direct]
-                self.choce_root_id(direct, root_id, root_weight, hops)
-            
-            self.commands[direct] = None 
-            self.data[direct] = None 
-        
-        for direct, hops in self.hops.items(): 
-            if hops == self.hops_to_root: 
-                self.connections[direct] = True 
-            else: self.connections[direct] = False
-
-        if not all(self.transferred.values()): 
-            self.send_root_id()
             return 
 
-        else: 
-            self.set_connect_state()
-
-    def set_connect_state(self): 
-        self.state = "connect"
-        self.choose_parent()
-
-        # те, кто отмечен в connections потенцальные родители,
-        # остальные - потенциальные дети 
-        self.transferred = {k: True for k in self.transferred}
         for direct, edge in self.edges.items(): 
-            if edge is None:
-                self.leafs[direct] = False 
+            if edge is None: 
+                self.transferred[direct] = True 
+                continue
             if self.connections[direct]: 
-                self.leafs[direct] = False 
-                self.transferred[direct] = False 
-                 
+                self.transferred[direct] = True 
+                continue
+
+            self.transferred[direct] = edge.transfer(self, "rootID", (self.root_id, self.root_weight, self.hops_to_root + 1))
+
+        if all(self.transferred.values()): 
+            self.start_backward_path()
+
+    
+# ---------------------------- backward path ----------------------------------------------------
+
+    def start_backward_path(self): 
+        self.state = "backward" 
+        self.choose_parent()
+        self.leafs = {d: None for d in self.leafs.keys()}
+        self.transferred = {
+            d: not self.connections[d]
+            for d in self.transferred
+        }
+        self.reset_root = 0 
     
     def choose_parent(self): 
+        # print(self.id, self.connections, not any(self.connections.values()))
+        if not any(self.connections.values()): 
+            self.parent = None
+            return
         
         for direct, connect in self.connections.items(): 
             if connect: self.parent = direct
         
         if self.parent == "left" and self.connections["top"]: 
             self.parent = "top"
-
-    def connect_nodes(self): 
-        for direct, command in self.commands.items(): 
-            if command is None:
+    
+    def backward_message_exchange(self): 
+        for direct, edge in self.edges.items(): 
+            if edge is None: 
+                self.leafs[direct] = False 
+                self.transferred[direct] = True 
                 continue
-            if command != "connect": 
+            if self.connections[direct]: 
+                self.leafs[direct] = False 
                 continue
-            # присоединяются ли листья
-            self.leafs[direct] = self.data[direct]
-            self.connections[direct] = self.data[direct]
+            
+            if self.commands[direct] == "connect": 
+                self.leafs[direct] = self.data[direct]
+                self.commands[direct] = None 
+                self.data[direct] = None 
 
-            self.commands[direct] = None 
-            self.data[direct] = None 
-        
-        if any([leaf is None for leaf in self.leafs.values()]): 
+        if any([l is None for l in self.leafs.values()]):
             return 
+        
+        for direct, edge in self.edges.items(): 
+            if edge is None or self.transferred[direct]:
+                continue
 
+            self.transferred[direct] = edge.transfer(self, "connect", direct == self.parent)
+
+        if all(self.transferred.values()): 
+            self.set_node_state() 
+                    
+    def set_node_state(self): 
+        # self.connections = self.leafs
+        if self.parent == None: 
+            self.state = "Root"
+        else: 
+            self.state = "Leaf"
+            # self.connections[self.parent] = True 
+
+    def ask_weight(self): 
         for direct, edge in self.edges.items(): 
             if edge is None: 
                 continue
-            if self.transferred[direct] or not self.connections[direct]: 
-                continue
-            # присоединяемся ли к родителю
-            self.transferred[direct] = edge.transfer(self, "connect", direct == self.parent)
-
-        if all(self.transferred): 
-            for direct in self.connections.keys():
-                if direct == self.parent or self.leafs[direct]: 
-                    self.connections[direct] = True 
-                else: self.connections[direct] = False
-                self.state = "Leaf"
-
-
-    def start_propagation(self): 
-        self.wait_propagation = True 
-        if self.has_propagation or self.state == "Root":         
-            self.state = "propagation"
-            self.has_propagation = True 
-            for direct, edge in self.edges.items(): 
-                if edge is None or not self.leafs[direct]: 
-                    self.transferred[direct] = True
-                else: self.transferred[direct] = False 
-            self.propagation()
-
-    def end_propagation(self): 
-        self.wait_propagation = False 
-        self.has_propagation = False 
-        if self.parent is None: 
-            self.state = "Root"
-        else: self.state = "Leaf"
-
-    def propagation(self): 
-
+            if self.neigh_weight[direct] == 0: 
+                edge.transfer(self, "weight?", None)
+    
+    def answer_weight(self): 
         for direct, edge in self.edges.items(): 
-            if edge is None:
-                continue
-            if not self.leafs[direct] or self.transferred[direct]: 
-                continue
-            self.transferred[direct] = edge.transfer(self, "propagation", None)
-
-
-    def Leaf(self): 
-        if self.parent is not None and self.commands[self.parent] == "propagation": 
-            self.commands[self.parent] = None
-            self.has_propagation = True 
-            self.start_propagation()
-
-
+            if self.commands[direct] == "weight?": 
+                edge.transfer(self, "weight", self.weight)
+                self.commands[direct] = None
 
 # ---------------------------- основной конечный автомат -----------------------------------------
     def step(self):
-        # print(self.id, self.get_branches())
+
         self.listening_neighbours()
+        
+        if self.weight_state_counter > 3: 
+            self.ask_weight()
+            self.weight_state_counter = 0
+            return 
         
         if self.state == "num": 
             self.nums_exchange()
         elif self.state == "weight": 
             self.weight_exchange()
-        elif self.state == "election": 
-            self.root_rating_exchange()
-        elif self.state == "leaf":
-            self.leaf()
-        elif self.state == "root": 
-            self.root()
-        elif self.state == "connect": 
-            self.connect_nodes()
-        elif self.state == "Root": 
-            self.Root()
-        elif self.state == "Leaf": 
-            self.Leaf()
-        elif self.state == "propagation": 
-            self.propagation()
+        elif self.state == "forward": 
+            self.root_id_exchange()
+        elif self.state == "update": 
+            self.update_root_info()
+        elif self.state == "backward": 
+            self.backward_message_exchange()
+            
         else: pass
         # print()  
         
+        if self.state == "weight": 
+            self.weight_state_counter += 1
+        else: 
+            self.weight_state_counter = 0 
     def is_ready(self): 
         if self.wait_propagation: 
             if self.has_propagation: return True 
@@ -924,12 +664,9 @@ class SquareCell(GridCell):
             painter.restore()
             return
 
-
-
-
         # --- 1. Не все соседи известны → голубой градиент ---
-        if any(v is None for v in self.neigh_nums.values()):
-            filled = sum(1 for v in self.neigh_nums.values() if v is not None)
+        if not all(self.accepted.values()):
+            filled = sum(self.accepted.values())
             ratio = filled / len(self.neigh_nums)
             r = int(255 - 40 * ratio)
             g = int(255 - 80 * ratio)
@@ -974,8 +711,6 @@ class SquareCell(GridCell):
             num_list = self.neigh_nums
         elif self.edge_draw_mode == 'weight':
             num_list = self.neigh_weight
-        elif self.edge_draw_mode == "root rating": 
-            num_list = self.neigh_root_rating
         elif self.edge_draw_mode == "None":
             num_list = {d: None for d in self.neigh_nums.keys()}
         elif self.edge_draw_mode == 'auto': 
@@ -983,16 +718,10 @@ class SquareCell(GridCell):
                 num_list = self.neigh_nums
             elif self.state == "weight":
                 num_list = self.neigh_weight
-            elif self.state == "election": 
-                num_list = self.neigh_root_rating
-
-            elif self.state == "connect" or "leaf" or "root": 
+            else: 
                 self.draw_graph(painter, offset, grid_size)
                 return
             
-            else: 
-                num_list = self.neigh_weight
-        
         else: 
             num_list = {k: None for k in self.edges.keys()}
         
@@ -1081,7 +810,13 @@ class SquareCell(GridCell):
             painter.restore()
             return             
         # ---- линии для всех True в parents
-        for direction, is_parent in self.connections.items():
+        if self.state == "Leaf" or "Root": 
+            connections = {d: l for d, l in self.leafs.items()}
+            if self.parent is not None: 
+                connections[self.parent] = True 
+        else: 
+            connections = {d: l for d, l in self.connections.items()}
+        for direction, is_parent in connections.items():
             if not is_parent:
                 continue
 
@@ -1112,14 +847,14 @@ class SquareCell(GridCell):
             num = self.weight
         elif self.draw_num_mode == 'state': 
             num = self.state[0]
-        elif self.draw_num_mode == 'root rating':
-            num = self.root_rating
         elif self.draw_num_mode == "hops to root": 
             if self.hops_to_root != 0: 
                 num = self.hops_to_root
             else: num = None
         elif self.draw_num_mode == "root ID": 
             num = self.root_id
+        elif self.draw_num_mode == "reset ID":  
+            num = self.reset_root
         elif self.draw_num_mode == "None": 
             num = None
         elif self.draw_num_mode == 'auto': 
@@ -1127,13 +862,9 @@ class SquareCell(GridCell):
                 num = None
             elif self.state == "weight":
                 num = self.weight
-            elif self.state == "election": 
-                num = self.root_rating
-            elif self.state == "connect" or "leaf" or "root": 
-                if self.hops_to_root != 0: 
-                    num = self.hops_to_root
-                else: num = None
-            else: num = self.weight
+            elif self.state == "backward": 
+                num = self.hops_to_root
+            else: num = self.state[0]
         if num == None or grid_size < 15 or not painter.isActive():
             return
         center = self.get_center(offset, grid_size)
